@@ -4,7 +4,8 @@ set(CMAKE_CXX_STANDARD 20)
 
 include(FetchContent)
 FetchContent_Declare(ndc
-	GIT_REPOSITORY https://github.com/Bannerjee/ndc)
+	GIT_REPOSITORY https://github.com/Bannerjee/ndc
+ 	GIT_TAG 31670da740782bba52bbf0bdcf5760947b741331)
 FetchContent_MakeAvailable(ndc)
 
 add_executable(demo src/main.cpp)
