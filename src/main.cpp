@@ -1,6 +1,8 @@
-#include <ndc/window.h>
-#include <ndc/gl.h>
-#include <ndc/gl_utils.h>
+//#include <ndc/window.h>
+//#include <ndc/gl.h>
+//#include <ndc/gl_utils.h>
+#include <glad/gl.h>
+#include <GLFW/glfw3.h>
 
 #include <iostream>
 #include <cstdint>
@@ -8,27 +10,11 @@
 #include <vector>
 #include <cassert>
 #include <random>
+#include <stdexcept>
 
-int move_dir = 0;
-bool fire_pressed = 0;
 
-void key_callback(ndc_window* win,ndc_input_key_t key,uint32_t,uint32_t,ndc_input_action_t action)
-{
-	if(action != NDC_PRESS) return;
-	switch(key)
-	{
-		case NDC_KEY_ESCAPE: win->alive = false; return;
-		case NDC_KEY_D: move_dir += 1; return;
-		case NDC_KEY_A: move_dir -= 1; return;
-		case NDC_KEY_SPACE: fire_pressed = true; return;
-		default: return;
-	};
-}
-void size_callback(ndc_window*,std::uint32_t w,std::uint32_t h)
-{
-	glViewport(0,0,w,h);
-}
-
+static int move_dir = 0;
+static bool fire_pressed = 0;
 
 
 struct Buffer
@@ -108,8 +94,64 @@ enum AlienType: uint8_t
     ALIEN_TYPE_B = 2,
     ALIEN_TYPE_C = 3
 };
+struct Shader
+{
+    std::uint32_t type{};
+    std::string source{};
+};
+std::uint32_t compile_shader(std::string_view src,std::uint32_t type)  
+{
+    std::uint32_t id = glCreateShader(type);
+    const char* psrc = src.data();
+    glShaderSource(id,1,&psrc,NULL);
+    glCompileShader(id);
+    
+    std::int32_t success = 0;
+    glGetShaderiv(id, GL_COMPILE_STATUS, &success);
+    if(!success)
+    {
+        std::int32_t len = 512;
+        glGetShaderiv(id, GL_INFO_LOG_LENGTH, &len);
+        std::string log(len,'\0');
+        glGetShaderInfoLog(id, len, nullptr,log.data());
+        glDeleteShader(id);
+        throw std::runtime_error("Failed to compile shader.Log:" + log);
+        return 0;
+    }
+    return id;
+}
+std::uint32_t compile_program(const std::vector<Shader>& shaders)
+{
+    std::uint32_t program = glCreateProgram();
+    std::vector<std::uint32_t> compiled_shaders;
+    compiled_shaders.reserve(shaders.size());
+    for(const auto& shader : shaders)
+    {
+        std::uint32_t shader_id = compile_shader(shader.source,shader.type);
+        compiled_shaders.push_back(shader_id);
+        glAttachShader(program,shader_id);
+    }
+    glLinkProgram(program);
+    std::int32_t success= 0;
+    glGetProgramiv(program,GL_LINK_STATUS,&success);
 
-void buffer_clear(Buffer& buffer, uint32_t color)
+    if(!success)
+    {
+        std::int32_t len = 512;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
+        std::string log(len,'\0');
+        glGetProgramInfoLog(program, len, nullptr, log.data());
+        throw std::runtime_error("Failed to link program.Log:"+log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    for(auto shader : compiled_shaders) glDeleteShader(shader);
+    
+    return program;
+}
+
+
+void buffer_clear(Buffer& buffer, std::uint32_t color)
 {
 	std::ranges::fill(buffer.data,color);
 }
@@ -181,7 +223,7 @@ std::uint32_t rgb_to_u32(std::uint8_t r,std::uint8_t g,std::uint8_t b)
 {
     return (r << 24) | (g << 16) | (b << 8) | 255;
 }
-static std::string fragment_shader = 
+static std::string fs_source = 
 R"(//F
 #version 460
 
@@ -194,7 +236,7 @@ void main()
 	o_color = texture(img,i_uv).rgb;
 }
 )";
-static std::string vertex_shader = 
+static std::string vs_source = 
 R"(//V
 #version 460
 layout(location = 0) out vec2 o_uv;
@@ -221,13 +263,31 @@ int main()
    	const size_t buffer_width = 224;
     const size_t buffer_height = 256;
 
-    ndc_window* win = ndc_create_window("space invaders",buffer_width * 2,buffer_height*2);
-    ndc_set_key_callback(win,key_callback);
-    ndc_set_size_callback(win,size_callback);
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    GLFWwindow* win = glfwCreateWindow(buffer_width * 2,buffer_height*2,"space invaders",0,0);
+    glfwMakeContextCurrent(win);
+    gladLoadGL(glfwGetProcAddress);
+
+    glfwSetKeyCallback(win,[](GLFWwindow* win,int key,int ,int action,int )
+    {
+        if(action != GLFW_PRESS) return;
+        switch(key)
+        {
+            case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(win,GLFW_TRUE); return;
+            case GLFW_KEY_D: move_dir += 1; return;
+            case GLFW_KEY_A: move_dir -= 1; return;
+            case GLFW_KEY_SPACE: fire_pressed = true; return;
+            default: return;
+        };  
+    });
+
 #ifdef NDEBUG
     set_debug_callback();
 #endif
-    ndc_show_window(win);
+    glfwShowWindow(win);
  
     glClearColor(1.0, 0.0, 0.0, 1.0);
 
@@ -245,9 +305,12 @@ int main()
     std::uint32_t vao = 0;
     glCreateVertexArrays(1, &vao);
 
-    auto shader = ndc_compile_program(2,fragment_shader.data(),vertex_shader.data());
+    auto program = compile_program({
+        Shader{GL_FRAGMENT_SHADER,fs_source},
+        Shader{GL_VERTEX_SHADER,vs_source}
+    });
 
-    glUseProgram(shader);
+    glUseProgram(program);
 
     glBindTextureUnit(0,buffer_texture);
     glBindVertexArray(vao);
@@ -366,7 +429,7 @@ int main()
     std::int32_t player_move_dir = 0;
 
     
-    while (win->alive)
+    while (!glfwWindowShouldClose(win))
     {
         buffer_clear(buffer, clear_color);
 
@@ -379,8 +442,8 @@ int main()
             glTextureSubImage2D(buffer_texture, 0, 0, 0, buffer.width, buffer.height,GL_RGBA, GL_UNSIGNED_INT_8_8_8_8,buffer.data.data());
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-            ndc_swap_buffers(win);
-            ndc_poll_events(win);
+            glfwSwapBuffers(win);
+            glfwPollEvents();
             continue;
         }
 
@@ -442,7 +505,7 @@ int main()
         glTextureSubImage2D(buffer_texture, 0, 0, 0, buffer.width, buffer.height,GL_RGBA, GL_UNSIGNED_INT_8_8_8_8,buffer.data.data());
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-        ndc_swap_buffers(win);
+        glfwSwapBuffers(win);
 
         for(std::uint32_t bi = 0; bi < game.num_bullets; ++bi)
         {
@@ -663,13 +726,13 @@ int main()
         }
         fire_pressed = false;
 
-        ndc_poll_events(win);
+        glfwPollEvents();
     }
     glDeleteTextures(1,&buffer_texture);
-    glDeleteProgram(shader);
+    glDeleteProgram(program);
     glDeleteVertexArrays(1, &vao);
 
-    ndc_destroy_window(win);
+    glfwTerminate();
 
 }
 std::vector<Sprite> create_alien_sprites()
